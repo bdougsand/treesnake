@@ -1,10 +1,11 @@
 import Char
 import Color
-import Debug 
+import Debug
 import Graphics.Collage exposing (..)
 import Graphics.Element exposing (..)
 import List exposing (..)
 import Keyboard
+import Random exposing (..)
 import Text
 import Time exposing (..)
 
@@ -23,15 +24,27 @@ type alias Game = {
     food: Places,
     -- dimensions in # of squares
     w: Int,
-    h: Int
+    h: Int,
+    seed: Seed
 
 }
 
---scoreStyle = 
+--scoreStyle =
 --  { Text.defaultStyle |
 --    height <- Just 20,
 --    color <- Color.black,
 --    bold <- True}
+
+randPlace w h seed guard =
+  let 
+    (x, seed') = generate (int 0 (w - 1)) seed
+    (y, seed'') = generate (int 0 (h - 1)) seed'
+    place = ((toFloat x), (toFloat y))
+  in
+    if guard place then
+      (place, seed'')
+    else
+      randPlace w h seed'' guard
 
 score game =
   length game.snake.places
@@ -77,14 +90,16 @@ isMoving snake =
 nextSnakeHead snake dir =
   nextHead (snakeHead snake) dir
 
--- validTurn dir keys =
---   if keys.x /= 0 then
---     keys.x + dir.x /= 0
---   else
---     if keys.y /= 0 then
---       keys.y + dir.y /= 0
+validTurn dir keys =
+ if keys.x /= 0 then
+   keys.x + dir.x /= 0
+ else
+   if keys.y /= 0 then
+     keys.y + dir.y /= 0
+   else
+     True
 
-newDirection dir keys =
+turn dir keys =
   if keys.x == 0 then
     if keys.y == 0 then
       dir
@@ -92,6 +107,12 @@ newDirection dir keys =
       {x = 0, y = keys.y}
   else
     {x = keys.x, y = 0}
+
+validatedTurn dir keys =
+  if validTurn dir keys then
+    turn dir keys
+  else
+    dir
 
 drawPlace size (x, y) =
   group [
@@ -103,7 +124,7 @@ drawPlace size (x, y) =
 
 drawPlaces size places =
   places
-    |> Debug.watch "places"
+    --|> Debug.watch "places"
     |> map (drawPlace size)
     |> group
 
@@ -124,46 +145,64 @@ drawScore game =
     --|> Text.style scoreStyle
     |> text
 
-updateSnake (timeDelta, keys) snake =
+selfCollide places =
   let
-    dir = (newDirection snake.dir keys)
+    h = head places
+    t = tail places
   in
-    { snake |
-        dir <- dir,
-        places <- if dir == {x=0, y=0} 
-                  then snake.places
-                  else (movePlaces snake.places dir)
-    }
+    case h of
+      Nothing -> False
+      Just front ->
+        case t of
+          Nothing -> False
+          Just rest ->
+            member front rest
+
+updateSnake dir ate snake =
+  {snake|
+    dir <- dir,
+    places <- if ate then
+                extendPlaces snake.places dir
+              else
+                movePlaces snake.places dir}
+
+updateFood game place =
+  let
+    (newPlace, seed') = randPlace game.w game.h game.seed (\p -> not (member p game.food))
+  in
+    {game|
+      food <- newPlace :: (filter ((/=) place) game.food),
+      seed <- seed'}
 
 --updateGame: (Time, {x: Int, y: Int}) -> Game -> Game
 updateGame (timeDelta, keys, shouldReset) game =
-  if 
+  if
     | shouldReset -> board
     | game.over -> game
+    --| game.snake.dir == {x:0, y:0} -> game
     | True ->
     let
-    dir = (newDirection snake.dir keys)
-    newHead = nextSnakeHead snake dir
-    ate = (member newHead game.food)
-    snake = updateSnake (timeDelta, keys) game.snake
-    food = if ate 
-            then filter ((/=) newHead) game.food 
-            else game.food
+      oldSnake = game.snake
+      dir = validatedTurn oldSnake.dir keys
+      newHead = nextSnakeHead oldSnake dir
+      ate = member newHead game.food
+      newSnake = updateSnake dir ate oldSnake
+      newGame = if ate then updateFood game newHead else game
     in
       if collideWalls game newHead ||
-         member newHead snake.places then
+         selfCollide newSnake.places then
         { game | over <- True }
-        else 
-        { game |
-          snake <- snake,
+        else
+        { newGame |
+          snake <- newSnake,
           frame <- game.frame + 1
         }
 
 
 player: Snake
-player = Snake [(0, 0), (0, 1), (0, 2)] {x = 0, y = 0}
+player = Snake [(10, 10), (10, 11), (10, 12)] {x = 1, y = 0}
 
-board = Game False False 0 player [(10, 10)] 25 25
+board = Game False False 0 player [(10, 10)] 25 25 (initialSeed 23)
 
 squareSize = 20
 
@@ -189,8 +228,8 @@ input =
   Signal.sampleOn delta (Signal.map3 (,,) delta Keyboard.arrows reset)
 
 -- Reset signal
-reset = Keyboard.isDown (Char.toCode 'r')
+reset = Keyboard.isDown (Char.toCode 'R')
 
 delta : Signal Time
 delta =
-  Signal.map(\t -> t) (fps 5)
+  Signal.map(\t -> t) (fps 10)
