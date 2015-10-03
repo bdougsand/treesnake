@@ -6,7 +6,7 @@ import Graphics.Element exposing (..)
 import List exposing (..)
 import Keyboard
 import Random exposing (..)
-import Text
+import Text exposing (defaultStyle)
 import Time exposing (..)
 
 type alias Places = List (Float, Float)
@@ -16,24 +16,19 @@ type alias Snake = {
     dir: {x: Float, y: Float}
 }
 
-type alias Game = {
-    over: Bool,
-    paused: Bool,
-    frame: Int,
-    snake: Snake,
-    food: Places,
-    -- dimensions in # of squares
-    w: Int,
-    h: Int,
-    seed: Seed
 
-}
 
---scoreStyle =
---  { Text.defaultStyle |
---    height <- Just 20,
---    color <- Color.black,
---    bold <- True}
+zeroVector = { x = 0, y = 0 }
+
+scoreStyle =
+  { defaultStyle |
+    height <- Just 20,
+    color <- Color.black,
+    bold <- True}
+
+statusStyle =
+  { scoreStyle |
+    height <- Just 40 }
 
 randPlace w h seed guard =
   let 
@@ -51,7 +46,11 @@ score game =
 
 statusMessage game =
   if | game.over -> "Game Over"
-     | True -> toString (score game)
+     | game.paused -> "Paused"
+     | otherwise -> ""
+
+scoreString game =
+  toString (score game)
 
 collision place places =
   member place places
@@ -135,15 +134,27 @@ drawFood size (x, y) =
 
 drawFoodPieces size places =
   places
-    |> Debug.watch "food"
     |> map (drawFood size)
     |> group
 
 drawScore game =
-  statusMessage game
+  scoreString game
     |> Text.fromString
-    --|> Text.style scoreStyle
+    |> Text.style scoreStyle
+    |> Text.monospace
     |> text
+
+drawStatus game =
+  let
+    message = statusMessage game
+                |> Debug.watch "status"
+                |> Text.fromString
+                |> Text.style statusStyle
+  in
+  group [
+    text message,
+    outlinedText (solid Color.white) message
+  ]
 
 selfCollide places =
   let
@@ -166,28 +177,52 @@ updateSnake dir ate snake =
               else
                 movePlaces snake.places dir}
 
-updateFood game place =
+updateFood game snake =
   let
-    (newPlace, seed') = randPlace game.w game.h game.seed (\p -> not (member p game.food))
+    (newPlace, seed') = randPlace game.w game.h game.seed (\p -> not (member p snake.places))
   in
     {game|
-      food <- newPlace :: (filter ((/=) place) game.food),
+      food <- case (head snake.places) of
+                Nothing -> game.food
+                Just place ->
+                  newPlace :: (filter ((/=) place) game.food),
       seed <- seed'}
 
+updateInterval game =
+  let
+    s = score game
+  in
+    if 
+      | s < 10 -> 200
+      | s < 20 -> 150
+      | s < 30 -> 100
+      | s < 35 -> 66
+      | otherwise -> 50
+
+
+incFrame game =
+  { game | frame <- game.frame + 1}
+
+setPaused isPaused game =
+  { game | paused <- isPaused }
+
+shouldUpdate game =
+  game.timeSinceUpdate >= (updateInterval game)
+
 --updateGame: (Time, {x: Int, y: Int}) -> Game -> Game
-updateGame (timeDelta, keys, shouldReset) game =
+updateGame (timeDelta, keys, shouldReset, paused) game =
   if
     | shouldReset -> board
     | game.over -> game
-    --| game.snake.dir == {x:0, y:0} -> game
-    | True ->
+    | paused -> { game | paused <- True }
+    | shouldUpdate game ->
     let
       oldSnake = game.snake
       dir = validatedTurn oldSnake.dir keys
       newHead = nextSnakeHead oldSnake dir
       ate = member newHead game.food
       newSnake = updateSnake dir ate oldSnake
-      newGame = if ate then updateFood game newHead else game
+      newGame = if ate then updateFood game newSnake else game
     in
       if collideWalls game newHead ||
          selfCollide newSnake.places then
@@ -195,41 +230,92 @@ updateGame (timeDelta, keys, shouldReset) game =
         else
         { newGame |
           snake <- newSnake,
-          frame <- game.frame + 1
+          frame <- game.frame + 1,
+          timeSinceUpdate <- 0,
+          paused <- False
         }
+    | otherwise -> 
+      { game | 
+        timeSinceUpdate <- game.timeSinceUpdate + (inMilliseconds timeDelta) }
 
 
 player: Snake
 player = Snake [(10, 10), (10, 11), (10, 12)] {x = 1, y = 0}
+type alias Game = {
+    over: Bool,
+    paused: Bool,
+    frame: Int,
+    timeSinceUpdate: Float,
+    snake: Snake,
+    food: Places,
+    -- dimensions in # of squares
+    w: Int,
+    h: Int,
+    seed: Seed
 
-board = Game False False 0 player [(10, 10)] 25 25 (initialSeed 23)
+}
+board = { over= False,
+          paused = False,
+          frame = 0,
+          timeSinceUpdate = 0,
+          snake = player,
+          food = [(10, 10)],
+          w = 25,
+          h = 25,
+          seed = (initialSeed 23) }
 
-squareSize = 20
+squareSize: Float
+squareSize = 30
 
 view: Game -> Element
 view game =
   let
-    width = game.w * 20
-    height = game.h * 20
+    width = (toFloat game.w) * squareSize
+    height = (toFloat game.h) * squareSize
   in
-    collage width height [
+    collage (floor width) (floor height) [
      (outlined (solid Color.black) (rect width height)),
-     (move (-220, -220) (drawScore game)),
-     (move (-(width/2)+squareSize/2, -(height/2)+squareSize/2)
-      (group [(drawFoodPieces 20 game.food),
-              (drawPlaces 20 game.snake.places)]))]
-  -- show (toString (movePlaces [(1, 2), (1, 3), (1, 4), (2, 4), (3, 4)] Up))
-  -- Signal.map view input
+     (move (-(width/2) + 30, -(height/2) + 30) (drawScore game)),
+     (move (-(width/2)+squareSize/2, 
+            -(height/2)+squareSize/2)
+      (group [(drawFoodPieces squareSize game.food),
+              (drawPlaces squareSize game.snake.places)])),
+     (drawStatus game)]
+
 
 main = Signal.map view (Signal.foldp updateGame board input)
---main = view (board player)
 
 input =
-  Signal.sampleOn delta (Signal.map3 (,,) delta Keyboard.arrows reset)
+  Signal.sampleOn delta (Signal.map4 (,,,) delta direction reset paused)
 
 -- Reset signal
 reset = Keyboard.isDown (Char.toCode 'R')
 
+paused = toggler (Char.toCode ' ')
+
+-- Generate a true signal when the space bar is first pressed. 
+-- Generate false after the key is released then pressed again
+toggler keyCode =
+  Signal.filterMap (\(_, current, last) -> if current /= last then 
+                                              Just current
+                                           else
+                                              Nothing)
+  False
+  (Signal.foldp (\isDown (last, status, lastStatus) ->
+    if isDown && not last then
+      (isDown, not status, status)
+    else
+      (isDown, status, status))
+    (False, False, False)
+    (Keyboard.isDown keyCode))
+
+-- Signal that produces the last direction pressed
+direction =
+  Signal.foldp (\(dir, isPaused) oldDir -> 
+                if dir /= zeroVector && not isPaused then dir else oldDir) 
+                zeroVector
+                (Signal.map2 (,) Keyboard.arrows paused)
+
 delta : Signal Time
 delta =
-  Signal.map(\t -> t) (fps 10)
+  Signal.map(\t -> t) (fps 20)
